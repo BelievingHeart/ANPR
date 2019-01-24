@@ -1,6 +1,6 @@
 #include <opencv2/opencv.hpp>
 #include <fmt/printf.h>
-#include "timer.h"
+#include "src/timer.hpp"
 
 namespace db
 {
@@ -33,12 +33,13 @@ void imshow(const cv::String &winName_, const cv::Mat &img_)
 }
 }; // namespace db
 
+using namespace cv;
 int main(const int argc, const char *argv[])
 {
     const cv::CommandLineParser parser(
         argc, argv,
         "{help ? h ||}"
-        "{@input | /home/afterburner/Downloads/lvlian/lvlian_8.jpeg | input image}"
+        "{@input | /home/afterburner/CLionProjects/ANPR/test/2715DTZ.jpg | input image}"
         "{scale_factor| 0.5| image scale factor}"
         "{rotate | false | true when dealing with things like book pages }");
     if (parser.has("help"))
@@ -47,10 +48,20 @@ int main(const int argc, const char *argv[])
         return 0;
     }
     const auto image_path = parser.get<std::string>("@input");
-    src = cv::imread(image_path, cv::IMREAD_COLOR);
+    Mat src = cv::imread(image_path, cv::IMREAD_COLOR);
     if (src.empty())
     {
         fmt::print("Error reading image <{}>\n", image_path);
         return -1;
     }
+    UMat cl_src = src.getUMat(ACCESS_READ), cl_gray;
+    cvtColor(cl_src, cl_gray, COLOR_BGR2GRAY);
+
+    std::vector<std::pair<Rect2i, Mat>> candidates = getSubregionCandidates(cl_gray);
+    show(candidates);
+    std::vector<std::pair<Rect2i, Mat>> verified = verifyCandidates(std::move(candidates));
+    show(verified);
+    String id = extractId(verified);
+    showResult(id, verified);
+
 }
