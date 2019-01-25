@@ -4,7 +4,9 @@
 
 using namespace cv;
 
-std::vector<std::pair<UMat, Rect2i>> getSubregionCandidates(InputArray gray);
+std::vector<std::pair<UMat, Rect2i>> getSubregionCandidates(const UMat& gray);
+
+void show(const std::vector<std::pair<UMat, Rect2i>> &input, const UMat& image);
 
 int main(const int argc, const char *argv[]) {
     const cv::CommandLineParser parser(argc, argv,
@@ -27,11 +29,20 @@ int main(const int argc, const char *argv[]) {
     equalizeHist(cl_gray, cl_gray);
 
     std::vector<std::pair<UMat, Rect2i>> candidates = getSubregionCandidates(cl_gray);
-    //    show(candidates);
-    //    std::vector<std::pair<Rect2i, Mat>> verified = verifyCandidates(std::move(candidates));
+        show(candidates, cl_src);
+    //    std::vector<std::pair<UMat, Rect2i>> verified = verifyCandidates(std::move(candidates));
     //    show(verified);
     //    String id = extractId(verified);
     //    showResult(id, verified);
+}
+
+void show(const std::vector<std::pair<UMat, Rect2i>> &input, const UMat& image) {
+    for (const auto &p : input) {
+        auto canvas = image.clone();
+        rectangle(canvas, p.second, {255, 255, 0}, 2);
+        imshow("debug", canvas);
+        waitKey(0);
+    }
 }
 
 std::vector<RotatedRect> get_rotatedRects(const std::vector<std::vector<Point2i>> &contours) {
@@ -42,24 +53,35 @@ std::vector<RotatedRect> get_rotatedRects(const std::vector<std::vector<Point2i>
     }
     return rotatedRects;
 }
+template <typename T>
+bool is_ratioQualified(const T& r){
+    float ar;
+    if constexpr (std::is_same_v<T, RotatedRect>) {
+        ar = r.size.width / r.size.height;
+    }else{
+        ar = r.width / r.height;
+    }
+    if (ar < 1.f)
+        ar = 1.f / ar;
 
-std::vector<RotatedRect> filter_rotatedRects_bySize(const std::vector<RotatedRect> &rotatedRects) {
-    constexpr float aspectRatio = 4.7272f, fluctuation = 1.5f;
+    constexpr float aspectRatio = 4.7272f, fluctuation = 1.f;
     constexpr float low_AR = aspectRatio - fluctuation;
     constexpr float high_AR = aspectRatio + fluctuation;
+
+    return (ar > low_AR and ar < high_AR);
+}
+
+std::vector<RotatedRect> filter_rotatedRects_bySize(const std::vector<RotatedRect> &rotatedRects) {
     std::vector<RotatedRect> ret;
     for (const auto &r : rotatedRects) {
-        float ar = r.size.width / r.size.height;
-        if (ar < 1.f)
-            ar = 1.f / ar;
         const float minLength = min(r.size.width, r.size.height);
-        if (ar > low_AR and ar < high_AR and minLength > 15 and minLength < 50)
+        if (is_ratioQualified(r) and minLength > 15 and minLength < 50)
             ret.push_back(r);
     }
     return ret;
 }
 
-std::vector<std::pair<UMat, Rect2i>> get_uprightPlates_and_theirLocations(InputArray image,
+std::vector<std::pair<UMat, Rect2i>> get_uprightPlates_and_theirLocations(const UMat& image,
                                                                           const std::vector<RotatedRect> &rts) {
     Mat bw;
     std::vector<std::pair<UMat, Rect2i>> ret;
@@ -77,11 +99,11 @@ std::vector<std::pair<UMat, Rect2i>> get_uprightPlates_and_theirLocations(InputA
         const int halfWidth_cropped = static_cast<const int>(0.75f * rt.size.width);
         const int halfHeight_cropped = static_cast<const int>(0.75f * rt.size.height);
         const Rect2i rect_cropped{static_cast<int>(rt.center.x - halfWidth_cropped), static_cast<int>(rt.center.y - halfHeight_cropped), 2 * halfWidth_cropped, 2 * halfHeight_cropped};
-        if (rect_cropped.x < 0 or rect_cropped.y < 0 or (rect_cropped.x + rect_cropped.width) > image.cols() or (rect_cropped.y + rect_cropped.height) > image.rows()) {
+        if (rect_cropped.x < 0 or rect_cropped.y < 0 or (rect_cropped.x + rect_cropped.width) > image.cols or (rect_cropped.y + rect_cropped.height) > image.rows) {
             continue;
         }
         Mat rotationMatrix = getRotationMatrix2D(Point2f(halfWidth_cropped, halfHeight_cropped), angle, 1);
-        UMat rotationRetified, cropped{image.getUMat(), rect_cropped};
+        UMat rotationRetified, cropped{image, rect_cropped};
         warpAffine(cropped, rotationRetified, rotationMatrix, {});
         threshold(rotationRetified, bw, 100, 255, THRESH_BINARY);
         const int interval = height / 3;
@@ -105,7 +127,7 @@ std::vector<std::pair<UMat, Rect2i>> get_uprightPlates_and_theirLocations(InputA
     return ret;
 }
 
-std::vector<std::pair<UMat, Rect2i>> getSubregionCandidates(InputArray gray) {
+std::vector<std::pair<UMat, Rect2i>> getSubregionCandidates(const UMat& gray) {
     UMat edgeImage, blurred;
     GaussianBlur(gray, blurred, {5, 5}, 1.5);
     Sobel(blurred, edgeImage, CV_8U, 1, 0);
