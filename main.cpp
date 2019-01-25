@@ -7,11 +7,14 @@ std::string track_name;
 
 using namespace cv;
 
-std::vector<std::pair<UMat, Rect2i>> getSubregionCandidates(const UMat& gray);
+std::vector<std::pair<UMat, Rect2i>> getSubregionCandidates(const UMat &gray);
 
-void show(const std::vector<std::pair<UMat, Rect2i>> &input, const UMat& image);
+void show(const std::vector<std::pair<UMat, Rect2i>> &input, const UMat &image);
+
+std::vector<std::pair<UMat, Rect2i>> verifyCandidates(std::vector<std::pair<UMat, Rect2i>> &candidates, const Ptr<ml::SVM> &SVM_ptr);
 
 int main(const int argc, const char *argv[]) {
+    Ptr<ml::SVM> SVM_ptr = ml::SVM::load("../SVM-weights.yaml");
     std::vector<std::string> filenames;
     const String dir = "/home/afterburner/CLionProjects/ANPR/test";
     utils::fs::glob(dir, "*.jpg", filenames);
@@ -34,15 +37,30 @@ int main(const int argc, const char *argv[]) {
             fmt::print("Candidates for plates don't exist in image <{}>\n", name);
             continue;
         }
-        show(candidates, cl_src);
-        //    std::vector<std::pair<UMat, Rect2i>> verified = verifyCandidates(std::move(candidates));
-        //    show(verified);
+//        show(candidates, cl_src);
+        std::vector<std::pair<UMat, Rect2i>> verified = verifyCandidates(candidates, SVM_ptr);
+        show(verified, cl_src);
         //    String id = extractId(verified);
         //    showResult(id, verified);
     }
 }
 
-void show(const std::vector<std::pair<UMat, Rect2i>> &input, const UMat& image) {
+std::vector<std::pair<UMat, Rect2i>> verifyCandidates(std::vector<std::pair<UMat, Rect2i>> &candidates, const Ptr<ml::SVM> &SVM_ptr) {
+    std::vector<std::pair<UMat, Rect2i>> ret;
+    for (auto &p : candidates) {
+        equalizeHist(p.first, p.first);
+        resize(p.first, p.first, {144, 33});
+        UMat SVM_input;
+        p.first.reshape(1, 1).convertTo(SVM_input, CV_32F);
+        if (SVM_ptr->predict(SVM_input) > 0) {
+            ret.push_back(std::move(p));
+        }
+    }
+    fmt::print("SVM: {} in {} out\n", candidates.size(), ret.size());
+    return ret;
+}
+
+void show(const std::vector<std::pair<UMat, Rect2i>> &input, const UMat &image) {
     for (const auto &p : input) {
         auto canvas = image.clone();
         rectangle(canvas, p.second, {255, 255, 0}, 2);
@@ -60,12 +78,11 @@ std::vector<RotatedRect> get_rotatedRects(const std::vector<std::vector<Point2i>
     }
     return rotatedRects;
 }
-template <typename T>
-bool is_ratioQualified(const T& r){
+template <typename T> bool is_ratioQualified(const T &r) {
     float ar;
     if constexpr (std::is_same_v<T, RotatedRect>) {
         ar = r.size.width / r.size.height;
-    }else{
+    } else {
         ar = r.width / r.height;
     }
     if (ar < 1.f)
@@ -88,8 +105,7 @@ std::vector<RotatedRect> filter_rotatedRects_bySize(const std::vector<RotatedRec
     return ret;
 }
 
-std::vector<std::pair<UMat, Rect2i>> get_uprightPlates_and_theirLocations(const UMat& image,
-                                                                          const std::vector<RotatedRect> &rts) {
+std::vector<std::pair<UMat, Rect2i>> get_uprightPlates_and_theirLocations(const UMat &image, const std::vector<RotatedRect> &rts) {
     Mat bw;
     std::vector<std::pair<UMat, Rect2i>> ret;
     ret.reserve(rts.size());
@@ -137,7 +153,7 @@ std::vector<std::pair<UMat, Rect2i>> get_uprightPlates_and_theirLocations(const 
     return ret;
 }
 
-std::vector<std::pair<UMat, Rect2i>> getSubregionCandidates(const UMat& gray) {
+std::vector<std::pair<UMat, Rect2i>> getSubregionCandidates(const UMat &gray) {
     UMat edgeImage, blurred;
     GaussianBlur(gray, blurred, {5, 5}, 1.5);
     Sobel(blurred, edgeImage, CV_8U, 1, 0);
@@ -150,10 +166,10 @@ std::vector<std::pair<UMat, Rect2i>> getSubregionCandidates(const UMat& gray) {
     std::vector<RotatedRect> all_rotatedRects = get_rotatedRects(allContours);
 
     std::vector<RotatedRect> rotatedRects_sizeQualified = filter_rotatedRects_bySize(all_rotatedRects);
-    if(rotatedRects_sizeQualified.empty()) return {};
+    if (rotatedRects_sizeQualified.empty())
+        return {};
 
-    std::vector<std::pair<UMat, Rect2i>> uprightPlates_and_theirLocations = get_uprightPlates_and_theirLocations(
-            blurred, rotatedRects_sizeQualified);
+    std::vector<std::pair<UMat, Rect2i>> uprightPlates_and_theirLocations = get_uprightPlates_and_theirLocations(blurred, rotatedRects_sizeQualified);
 
     return uprightPlates_and_theirLocations;
 }
