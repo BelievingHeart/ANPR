@@ -1,6 +1,9 @@
 #include "src/timer.hpp"
 #include <fmt/printf.h>
 #include <opencv2/opencv.hpp>
+#include <opencv2/core/utils/filesystem.hpp>
+
+std::string track_name;
 
 using namespace cv;
 
@@ -9,38 +12,42 @@ std::vector<std::pair<UMat, Rect2i>> getSubregionCandidates(const UMat& gray);
 void show(const std::vector<std::pair<UMat, Rect2i>> &input, const UMat& image);
 
 int main(const int argc, const char *argv[]) {
-    const cv::CommandLineParser parser(argc, argv,
-                                       "{help ? h ||}"
-                                       "{@input | /home/afterburner/CLionProjects/ANPR/test/2715DTZ.jpg | input image}"
-                                       "{scale_factor| 0.5| image scale factor}"
-                                       "{rotate | false | true when dealing with things like book pages }");
-    if (parser.has("help")) {
-        parser.printMessage();
-        return 0;
-    }
-    const auto image_path = parser.get<std::string>("@input");
-    Mat src = cv::imread(image_path, cv::IMREAD_COLOR);
-    if (src.empty()) {
-        fmt::print("Error reading image <{}>\n", image_path);
-        return -1;
-    }
-    UMat cl_src = src.getUMat(ACCESS_READ), cl_gray;
-    cvtColor(cl_src, cl_gray, COLOR_BGR2GRAY);
-    equalizeHist(cl_gray, cl_gray);
+    std::vector<std::string> filenames;
+    const String dir = "/home/afterburner/CLionProjects/ANPR/test";
+    utils::fs::glob(dir, "*.jpg", filenames);
+    utils::fs::glob(dir, "*.JPG", filenames);
 
-    std::vector<std::pair<UMat, Rect2i>> candidates = getSubregionCandidates(cl_gray);
+    for (const auto &name : filenames) {
+        fmt::print("Processing image: {}\n", name);
+        track_name = name;
+        Mat src = cv::imread(name, cv::IMREAD_COLOR);
+        if (src.empty()) {
+            fmt::print("Error reading image <{}>\n", name);
+            return -1;
+        }
+        UMat cl_src = src.getUMat(ACCESS_READ), cl_gray;
+        cvtColor(cl_src, cl_gray, COLOR_BGR2GRAY);
+        equalizeHist(cl_gray, cl_gray);
+
+        std::vector<std::pair<UMat, Rect2i>> candidates = getSubregionCandidates(cl_gray);
+        if (candidates.empty()) {
+            fmt::print("Candidates for plates don't exist in image <{}>\n", name);
+            continue;
+        }
         show(candidates, cl_src);
-    //    std::vector<std::pair<UMat, Rect2i>> verified = verifyCandidates(std::move(candidates));
-    //    show(verified);
-    //    String id = extractId(verified);
-    //    showResult(id, verified);
+        //    std::vector<std::pair<UMat, Rect2i>> verified = verifyCandidates(std::move(candidates));
+        //    show(verified);
+        //    String id = extractId(verified);
+        //    showResult(id, verified);
+    }
 }
 
 void show(const std::vector<std::pair<UMat, Rect2i>> &input, const UMat& image) {
     for (const auto &p : input) {
         auto canvas = image.clone();
         rectangle(canvas, p.second, {255, 255, 0}, 2);
-        imshow("debug", canvas);
+        imshow("Whole", canvas);
+        imshow("Part", p.first);
         waitKey(0);
     }
 }
@@ -88,16 +95,18 @@ std::vector<std::pair<UMat, Rect2i>> get_uprightPlates_and_theirLocations(const 
     ret.reserve(rts.size());
     for (const auto &rt : rts) {
         float angle;
-        int height;
+        int height, width;
         if (rt.size.width > rt.size.height) {
             angle = rt.angle;
             height = static_cast<int>(rt.size.height);
+            width = static_cast<int>(rt.size.width);
         } else {
             angle = rt.angle + 90.f;
             height = static_cast<int>(rt.size.width);
+            width = static_cast<int>(rt.size.height);
         }
-        const int halfWidth_cropped = static_cast<const int>(0.75f * rt.size.width);
-        const int halfHeight_cropped = static_cast<const int>(0.75f * rt.size.height);
+        const int halfWidth_cropped = static_cast<const int>(0.75f * width);
+        const int halfHeight_cropped = static_cast<const int>(0.75f * height);
         const Rect2i rect_cropped{static_cast<int>(rt.center.x - halfWidth_cropped), static_cast<int>(rt.center.y - halfHeight_cropped), 2 * halfWidth_cropped, 2 * halfHeight_cropped};
         if (rect_cropped.x < 0 or rect_cropped.y < 0 or (rect_cropped.x + rect_cropped.width) > image.cols or (rect_cropped.y + rect_cropped.height) > image.rows) {
             continue;
@@ -106,6 +115,7 @@ std::vector<std::pair<UMat, Rect2i>> get_uprightPlates_and_theirLocations(const 
         UMat rotationRetified, cropped{image, rect_cropped};
         warpAffine(cropped, rotationRetified, rotationMatrix, {});
         threshold(rotationRetified, bw, 100, 255, THRESH_BINARY);
+
         const int interval = height / 3;
         std::vector<Point2i> seeds;
         seeds.reserve(8);
@@ -134,12 +144,14 @@ std::vector<std::pair<UMat, Rect2i>> getSubregionCandidates(const UMat& gray) {
     threshold(edgeImage, edgeImage, 100, 255, THRESH_BINARY);
     Mat structuringElement = getStructuringElement(MORPH_RECT, {17, 3});
     morphologyEx(edgeImage, edgeImage, MORPH_CLOSE, structuringElement);
+
     std::vector<std::vector<Point2i>> allContours;
     findContours(edgeImage, allContours, {}, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);
     std::vector<RotatedRect> all_rotatedRects = get_rotatedRects(allContours);
-    std::vector<RotatedRect> rotatedRects_sizeQualified = filter_rotatedRects_bySize(all_rotatedRects); //TODO: Return noopt if size = 0, ret.first = rt.boundingBox
 
-    std::cout << rotatedRects_sizeQualified.size() << '\n';
+    std::vector<RotatedRect> rotatedRects_sizeQualified = filter_rotatedRects_bySize(all_rotatedRects);
+    if(rotatedRects_sizeQualified.empty()) return {};
+
     std::vector<std::pair<UMat, Rect2i>> uprightPlates_and_theirLocations = get_uprightPlates_and_theirLocations(
             blurred, rotatedRects_sizeQualified);
 

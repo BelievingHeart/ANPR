@@ -14,6 +14,7 @@ list(APPEND CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR})
 add_executable(main main.cpp)
 
 # opencv
+set(CUDA_TOOLKIT_ROOT_DIR "/usr/local/cuda-10.0")
 if(CMAKE_BUILD_TYPE MATCHES "Release")
     set(OpenCV_DIR "/home/afterburner/clones/opencv/build-release")
     message(STATUS "using opencv-release")
@@ -37,6 +38,7 @@ target_link_libraries(main PRIVATE fmt::fmt)
 #set(CMAKE_CXX_FLAGS ${CMAKE_CXX_FLAGS} -ltbb -ltbbmalloc -ltbbmalloc_proxy)
 
 # boost
+#set(BOOST_ROOT "/home/afterburner/clones/boost")
 #find_package(Boost REQUIRED)
 #target_link_libraries(main PRIVATE ${Boost_LIBRARIES})
 #target_include_directories(main PRIVATE ${Boost_INCLUDE_DIR})
