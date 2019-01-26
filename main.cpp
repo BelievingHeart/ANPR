@@ -3,9 +3,111 @@
 #include <opencv2/opencv.hpp>
 #include <opencv2/core/utils/filesystem.hpp>
 
-std::string track_name;
-
 using namespace cv;
+String track_name;
+
+struct ConvolutionClassifier{
+    explicit ConvolutionClassifier(const String &model_path) : classifier(dnn::readNetFromTensorflow(model_path)) {}
+
+
+
+    std::vector<std::string>
+    extract_IDs(const std::vector<std::pair<UMat, Rect2i>> &plates_and_theirLocations) {
+        std::vector<std::string> ret;
+        for (const auto &p : plates_and_theirLocations) {
+            UMat bw;
+            threshold(p.first, bw, 80, 255, THRESH_BINARY_INV);
+//            Mat structuringElement = getStructuringElement(MORPH_RECT, {3, 1});
+//            erode(bw, bw, structuringElement);
+            imshow(track_name, bw);
+            waitKey(0);
+
+            std::vector<std::vector<Point2i>> contours;
+            findContours(bw, contours, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);
+            std::vector<Rect2i> boxes = extract_boxes_from_contours(contours);
+            boxes = filterBoxes_bySize(std::move(boxes), bw);
+            fmt::print("boxes.size: {}\n", boxes.size());
+
+            std::string id = extract_ID(bw, std::move(boxes));
+            ret.push_back(std::move(id));
+        }
+
+        return ret;
+    }
+
+private:
+    dnn::Net classifier;
+    std::array<char, 30> classes{'0','1','2','3','4','5','6','7','8','9','B', 'C', 'D', 'F', 'G', 'H', 'J', 'K', 'L', 'M', 'N', 'P', 'R', 'S', 'T', 'V', 'W', 'X', 'Y', 'Z'};
+    const size_t numCharacters = 7;
+    const char nullChar = '~';
+
+
+    std::vector<Rect2i> extract_boxes_from_contours(const std::vector<std::vector<Point2i>> &contours) {
+        std::vector<Rect2i> ret; ret.reserve(contours.size());
+        for (auto &c : contours) ret.push_back(boundingRect(c));
+        return ret;
+    }
+
+    std::vector<Rect2i> filterBoxes_bySize(std::vector<Rect2i> &&allBoxes, const UMat &bw) {
+        std::vector<Rect2i> ret;
+        constexpr int maxWidth = 30, maxHeight = 33, minHeight = 20;
+        constexpr float maxAreaRatio = 0.8f;
+        for (auto &box: allBoxes) {
+            const bool sizeQualified = box.width < maxWidth and box.height > minHeight and box.height < maxHeight;
+            const bool areaQualified = (countNonZero(UMat(bw, box)) / static_cast<float>(box.area())) < maxAreaRatio;
+            if(sizeQualified and areaQualified) ret.push_back(std::move(box));
+        }
+        return ret;
+    }
+
+    UMat adjust_size(const UMat &input) {
+        constexpr int networkInput_width = 20;
+        const int boarderThickness = (input.rows - input.cols) / 2;
+        UMat padded;
+        copyMakeBorder(input, padded, 0, 0, boarderThickness, boarderThickness, BORDER_CONSTANT);
+        UMat resized;
+        resize(padded, resized, {networkInput_width, networkInput_width});
+        return resized;
+    }
+
+    char classify_character(const UMat &mat) {
+        constexpr double confidenceThreshold = 0.3;
+        Mat net_in = dnn::blobFromImage(mat);
+        classifier.setInput(net_in);
+        Mat net_out;
+        classifier.forward(net_out);
+        double maxVal;
+        Point2i maxVal_location;
+        minMaxLoc(net_out, nullptr, &maxVal, nullptr, &maxVal_location);
+        if (maxVal < confidenceThreshold) {
+            return nullChar;
+        }else{
+            return classes[maxVal_location.x];
+        }
+    }
+
+    String  extract_ID(const UMat &bw, std::vector<Rect2i> &&boxes) {
+        String id{};
+        std::vector<std::pair<char,int>> characters_and_theirOrders;
+        for (const auto &b : boxes) {
+            UMat characterImage(bw, b);
+            characterImage = adjust_size(characterImage);
+            const char result = classify_character(characterImage);
+            if (result != nullChar) {
+                characters_and_theirOrders.emplace_back(result, b.x);
+                fmt::print("{}-", result);
+            }
+        }
+        if(characters_and_theirOrders.size() != numCharacters) return {"Number of characters doesn't match"};
+
+        std::sort(characters_and_theirOrders.begin(), characters_and_theirOrders.end(),
+                [](const auto& a, const auto& b){return a.second< b.second;});
+        for (const auto &pair : characters_and_theirOrders) id.push_back(pair.first);
+        fmt::print("\n");
+        return id;
+    }
+
+};
 
 std::vector<std::pair<UMat, Rect2i>> getSubregionCandidates(const UMat &gray);
 
@@ -13,12 +115,14 @@ void show(const std::vector<std::pair<UMat, Rect2i>> &input, const UMat &image);
 
 std::vector<std::pair<UMat, Rect2i>> verifyCandidates(std::vector<std::pair<UMat, Rect2i>> &candidates, const Ptr<ml::SVM> &SVM_ptr);
 
+
 int main(const int argc, const char *argv[]) {
     Ptr<ml::SVM> SVM_ptr = ml::SVM::load("../SVM-weights.yaml");
-    std::vector<std::string> filenames;
-    const String dir = "/home/afterburner/CLionProjects/ANPR/test";
-    utils::fs::glob(dir, "*.jpg", filenames);
-    utils::fs::glob(dir, "*.JPG", filenames);
+    ConvolutionClassifier classifier("../model.pb");
+    std::vector<String> filenames;
+    const String image_dir = "/home/afterburner/CLionProjects/ANPR/test";
+    utils::fs::glob(image_dir, "*.jpg", filenames);
+    utils::fs::glob(image_dir, "*.JPG", filenames);
 
     for (const auto &name : filenames) {
         fmt::print("Processing image: {}\n", name);
@@ -39,11 +143,19 @@ int main(const int argc, const char *argv[]) {
         }
 //        show(candidates, cl_src);
         std::vector<std::pair<UMat, Rect2i>> verified = verifyCandidates(candidates, SVM_ptr);
-        show(verified, cl_src);
-        //    String id = extractId(verified);
-        //    showResult(id, verified);
+//        show(verified, cl_src);
+        std::vector<std::string> potential_IDs = classifier.extract_IDs(verified);
+        if (!potential_IDs.empty()) {
+            for (const auto &id : potential_IDs) {
+                fmt::print("Plate ID: {}\n", id);
+            }
+        }
+        //    showResult(potential_IDs, verified);
+        fmt::print("\n\n");
     }
 }
+
+
 
 std::vector<std::pair<UMat, Rect2i>> verifyCandidates(std::vector<std::pair<UMat, Rect2i>> &candidates, const Ptr<ml::SVM> &SVM_ptr) {
     std::vector<std::pair<UMat, Rect2i>> ret;
@@ -129,7 +241,7 @@ std::vector<std::pair<UMat, Rect2i>> get_uprightPlates_and_theirLocations(const 
         }
         Mat rotationMatrix = getRotationMatrix2D(Point2f(halfWidth_cropped, halfHeight_cropped), angle, 1);
         UMat rotationRetified, cropped{image, rect_cropped};
-        warpAffine(cropped, rotationRetified, rotationMatrix, {});
+        warpAffine(cropped, rotationRetified, rotationMatrix, {}, INTER_AREA);
         threshold(rotationRetified, bw, 100, 255, THRESH_BINARY);
 
         const int interval = height / 3;
