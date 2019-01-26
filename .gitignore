@@ -78,9 +78,6 @@ cmake-build-*/
 */cmake-build-release/*
 *cmake-build-release/*
 
-test/*
-model.pb
-SVM-weights.yaml
 
 
 # Mongo Explorer plugin
